@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#22e5ea">
+  <title>Quem é o Problems verdadeiro?</title>
+  <link rel="icon" href="img/problems.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="module" src="js/game.js"></script>
+</head>
+<body data-screen="join">
+  <header class="topbar" id="topbar" hidden>
+    <img src="img/logo.svg" class="logo-sm" alt="Problems">
+    <span class="round-tag" id="roundTag"></span>
+    <div class="me" id="meChip"></div>
+  </header>
+  <main class="stage" id="stage"><p class="loading">Carregando…</p></main>
+  <img src="img/problems.svg" class="mascot" alt="" aria-hidden="true">
+  <div class="overlay" id="overlay" hidden></div>
+  <div class="bars" id="bars" hidden aria-hidden="true"><i style="--k:0"></i><i style="--k:1"></i><i style="--k:2"></i><i style="--k:3"></i><i style="--k:4"></i><i style="--k:5"></i><i style="--k:6"></i><i style="--k:7"></i></div>
+  <div class="stripes" id="stripes" hidden aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+  <div class="iris" id="iris" hidden aria-hidden="true"><div class="iris-hole"></div><img src="img/problems.svg" class="iris-hex" alt=""></div>
+
+  <dialog class="dlg" id="confirmDlg">
+    <form method="dialog">
+      <img src="img/problems.svg" class="dlg-hex" alt="">
+      <h2 id="dlgTitle"></h2>
+      <p id="dlgText"></p>
+      <div class="dlg-actions">
+        <button class="btn" value="cancel">Voltar</button>
+        <button class="btn btn-primary" value="ok" id="dlgOk"></button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

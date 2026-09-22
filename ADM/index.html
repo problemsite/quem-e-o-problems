@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Painel ADM · Quem é o Problems verdadeiro?</title>
+  <link rel="icon" href="../img/problems.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../css/style.css">
+  <script type="module" src="../js/adm.js"></script>
+</head>
+<body data-screen="adm">
+  <header class="topbar">
+    <img src="../img/logo.svg" class="logo-sm" alt="Problems">
+    <span class="round-tag">ADM</span>
+    <a class="btn btn-quiet push-right" href="../">Abrir o jogo</a>
+  </header>
+  <main class="stage adm" id="admMain">
+    <div class="adm-grid">
+      <section class="panel wide">
+        <h2>Partida</h2>
+        <div id="gameInfo"></div>
+        <div class="actions">
+          <button class="btn" id="forceBtn">Pular para a próxima fase</button>
+          <button class="btn btn-danger" id="resetBtn">Reiniciar partida</button>
+        </div>
+        <div class="danger-zone">
+          <button class="btn btn-danger" id="clearBtn">Limpar histórico</button>
+          <p>Apaga do Firebase todas as respostas, votos e pontos já jogados e volta ao lobby. Jogadores e formulários continuam.</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Problems verdadeiro</h2>
+        <p class="lede">Por padrão é quem entrou com o nome Problems (maiúsculas não importam). Escolher alguém aqui vale na hora, inclusive para a rodada em andamento.</p>
+        <ul class="rows" id="trueList"></ul>
+      </section>
+
+      <section class="panel">
+        <h2>Jogadores</h2>
+        <ul class="rows" id="playerList"></ul>
+        <div class="actions">
+          <button class="btn" id="purgeBtn">Remover quem está offline</button>
+          <button class="btn btn-danger" id="removeAllBtn">Remover todos</button>
+        </div>
+        <p class="status">Remover alguém apaga também a foto, as respostas e os votos dessa pessoa do Firebase.</p>
+      </section>
+
+      <section class="panel wide">
+        <h2>Formulários <small id="fCount"></small></h2>
+        <p class="lede">Cada formulário é uma rodada, e eles entram na ordem desta lista. Tudo que você muda aqui é salvo na hora.</p>
+        <form id="newForm" class="inline-form">
+          <input type="text" id="newTitle" maxlength="60" placeholder="Nome do novo formulário (opcional)" aria-label="Nome do novo formulário">
+          <button class="btn btn-primary">Criar formulário</button>
+        </form>
+        <div id="formList" class="form-list"></div>
+        <button class="btn" id="sampleBtn" hidden>Criar formulário de exemplo</button>
+      </section>
+
+      <section class="panel wide">
+        <h2>Respostas da rodada</h2>
+        <details id="spoil">
+          <summary>Mostrar quem escreveu o quê e quem votou em quem</summary>
+          <div id="spoilBody"></div>
+        </details>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

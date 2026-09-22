@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 328" role="img" aria-label="Problems">
+  <path d="M150 8 L291 86 L291 244 L150 320 L9 244 L9 86 Z" fill="#fff" stroke="#000" stroke-width="6" stroke-linejoin="round"/>
+  <g fill="none" stroke="#000" stroke-width="6.5" stroke-linecap="round">
+    <path d="M152 76 Q140 96 116 120"/>
+    <path d="M218 110 Q207 131 191 150"/>
+    <path d="M64 164 Q60 178 62 194"/>
+  </g>
+</svg>
