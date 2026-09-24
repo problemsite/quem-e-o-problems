@@ -486,12 +486,20 @@ function startLive() {
   }, denied));
   live.subs.push(onValue(liveRef("cur"), (snap) => { live.cursors = snap.val() || {}; }, denied));
   live.subs.push(onValue(liveRef("drag"), (snap) => { live.drags = snap.val() || {}; }, denied));
+  // Eventos de clique/arremesso: TODO mundo toca o efeito; só o anfitrião aplica a física
+  const seenFx = new Set();
   live.subs.push(onChildAdded(liveRef("fx"), (snap) => {
-    if (!live.host) return;
-    const e = snap.val(); remove(snap.ref);
-    const f = e && floaters.get(e.id); if (!f) return;
-    if (e.kind === "boing") { f.rv += 900; f.sc = 1.35; f.vy -= 120; }
-    if (e.kind === "fling") { f.vx = e.vx || 0; f.vy = e.vy || 0; f.rv += (e.vx || 0) * 1.5; }
+    const e = snap.val(), key = snap.key || snap.ref?.p;
+    if (!e || seenFx.has(key)) return;
+    seenFx.add(key);
+    if (nowServer() - (e.t || 0) > 4000) { if (live.host) remove(snap.ref).catch(() => {}); return; }
+    const f = floaters.get(e.id); if (!f) return;
+    if (e.kind === "boing") clickFx(f, e.emoji);
+    if (live.host) {
+      if (e.kind === "boing") { f.rv += 900; f.sc = 1.35; f.vy -= 120; }
+      if (e.kind === "fling") { f.vx = e.vx || 0; f.vy = e.vy || 0; f.rv += (e.vx || 0) * 1.5; }
+      setTimeout(() => remove(snap.ref).catch(() => {}), 3000);
+    }
   }, denied));
   const claim = async () => {
     if (!live.ok) return;
@@ -617,23 +625,36 @@ function bindField(field) {
     const f = pointer.drag; if (!f) return;
     pointer.drag = null; f.el.classList.remove("grab");
     let fx;
-    if (pointer.moved < 6) fx = { id: f.id, kind: "boing" };
+    if (pointer.moved < 6) fx = { id: f.id, kind: "boing", emoji: CLICK_EMOJI[Math.floor(Math.random() * CLICK_EMOJI.length)], t: nowServer() };
     else {
       let vx = f.dvx || 0, vy = f.dvy || 0; const sp = Math.hypot(vx, vy), max = 1100;
       if (sp > max) { vx *= max / sp; vy *= max / sp; }
-      fx = { id: f.id, kind: "fling", vx: Math.round(vx), vy: Math.round(vy) };
+      fx = { id: f.id, kind: "fling", vx: Math.round(vx), vy: Math.round(vy), t: nowServer() };
     }
-    if (amSim()) {                                   // o próprio anfitrião aplica na hora
-      if (fx.kind === "boing") { f.rv += 900; f.sc = 1.35; f.vy -= 120; }
+    if (!live.ok) {                                  // sem Firebase ao vivo: só na minha tela
+      if (fx.kind === "boing") { f.rv += 900; f.sc = 1.35; f.vy -= 120; clickFx(f, fx.emoji); }
       else { f.vx = fx.vx; f.vy = fx.vy; f.rv += fx.vx * 1.5; }
-    } else {
-      f.tx = f.x; f.ty = f.y;
-      remove(liveRef(`drag/${f.id}`)).catch(() => {});
-      push(liveRef("fx"), fx);
+      return;
     }
+    if (!live.host) { f.tx = f.x; f.ty = f.y; remove(liveRef(`drag/${f.id}`)).catch(() => {}); }
+    push(liveRef("fx"), fx);                         // todos (inclusive eu) recebem e tocam o efeito
   };
   field.addEventListener("pointerup", release);
   field.addEventListener("pointercancel", release);
+}
+// Efeito do clique que todo mundo vê: pulo com giro, estrelinhas e um emoji subindo
+const CLICK_EMOJI = ["😂", "😎", "🤩", "😜", "🥳", "😱", "🤪", "💥", "⭐", "💖", "👋", "🔥"];
+function clickFx(f, emoji) {
+  const av = f.el.querySelector(".floater-av"); if (!av) return;
+  av.classList.remove("boing"); void av.offsetWidth; av.classList.add("boing");
+  setTimeout(() => av.classList.remove("boing"), 800);
+  burst(av, 14);
+  if (emoji) {
+    const b = document.createElement("span");
+    b.className = "click-emoji"; b.textContent = emoji;
+    f.el.appendChild(b);
+    setTimeout(() => b.remove(), 1200);
+  }
 }
 // Aparece com um "puf" no próprio lugar
 function puff(field, f, box) {
@@ -1023,6 +1044,7 @@ function buildReveal() {
         <h2 class="sub">Placar</h2>
         <ol class="board" id="board"></ol>
         <div class="actions"><button class="btn btn-primary" id="nextBtn"></button></div>
+        <div class="wait-box" id="waitBox" hidden aria-live="polite"></div>
         <p class="status" id="status" role="status"></p>
       </div>
     </div>
@@ -1152,10 +1174,17 @@ function returnFromReveal(auto) {
   if (st.phase !== "reveal") return;
   if (auto) kicked = true;
   kickLeft = null;
-  const go = () => set(dbRef(`${sessPath(st)}/ready/${readyKey(st)}/${myId}`), true);
-  if (reduceMotion() || roundInfo(G).isLast) { go(); return; }
-  stage.classList.add("leaving");
-  setTimeout(go, 330);
+  set(dbRef(`${sessPath(st)}/ready/${readyKey(st)}/${myId}`), true);
+}
+// Caixa "aguardando os outros" (fica na tela até todo mundo confirmar)
+function waitBoxHTML(verb) {
+  const pr = progress(G), players = validPlayers(G), done = new Set(pr.done);
+  const missing = pr.need.filter((id) => !done.has(id)).map((id) => players[id]?.name).filter(Boolean);
+  return `<img src="img/problems.svg" class="wait-hex" alt="">
+    <div class="wb-text"><strong>Aguardando os outros…</strong>
+      <span>${pr.done.length} de ${pr.need.length} ${verb}</span>
+      <span class="pips">${pr.need.map((_, i) => `<span class="pip ${i < pr.done.length ? "on" : ""}"></span>`).join("")}</span>
+      ${missing.length ? `<span class="wb-missing">Faltam: ${esc(joinNames(missing))}</span>` : ""}</div>`;
 }
 function startKick() {
   kickLeft = KICK_SECONDS;
@@ -1264,6 +1293,8 @@ function refreshReveal() {
   $("#status").textContent = last
     ? `${pr.done.length} de ${pr.need.length} prontos para o resultado final.`
     : `${pr.done.length} de ${pr.need.length} prontos para a próxima rodada. Quem não clicar segue automaticamente.`;
+  const wb = $("#waitBox");
+  if (wb) { wb.hidden = !rd[myId]; if (rd[myId]) wb.innerHTML = waitBoxHTML(last ? "prontos para o resultado final" : "prontos para a próxima rodada"); }
 }
 
 /* ---------- Final ---------- */
@@ -1336,9 +1367,13 @@ function buildFinal() {
       ${tiebreakHTML(ties)}
     </div>
     <div class="actions center"><button class="btn btn-primary" id="againBtn"></button></div>
+    <div class="wait-box center" id="waitBox" hidden aria-live="polite"></div>
     <p class="status center-text" id="status" role="status"></p>
   </section>`;
-  $("#againBtn").addEventListener("click", toggleReady);
+  $("#againBtn").addEventListener("click", () => {
+    const st = getState(G);
+    set(dbRef(`${sessPath(st)}/ready/${readyKey(st)}/${myId}`), true);
+  });
 
   const seenKey = `qp.final.${st.session}`;
   let seen = false; try { seen = sessionStorage.getItem(seenKey) === "1"; } catch {}
@@ -1468,5 +1503,9 @@ function playRace() {
 function refreshFinal() {
   const st = getState(G), rd = sess(G).ready?.[readyKey(st)] || {}, pr = progress(G);
   $("#againBtn").textContent = rd[myId] ? "Pronto, esperando os outros" : "Jogar de novo";
+  $("#againBtn").disabled = !!rd[myId];
   $("#status").textContent = `${pr.done.length} de ${pr.need.length} querem jogar de novo.`;
+  const wb = $("#waitBox");
+  wb.hidden = !rd[myId];
+  if (rd[myId]) wb.innerHTML = waitBoxHTML("prontos para voltar ao lobby");
 }
