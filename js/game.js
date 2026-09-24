@@ -1,5 +1,5 @@
 import {
-  configOk, db, dbRef, ref, onValue, set, update, remove, push, onDisconnect, serverTimestamp,
+  configOk, db, dbRef, liveRef, ref, onValue, onChildAdded, runTransaction, set, update, remove, push, onDisconnect, serverTimestamp,
   esc, rk, letter, joinNames, toList, isSubmitted, roundTitle, getState, sess, sessPath,
   validPlayers, byJoin, currentTrue, roundInfo, answerOrder, ranking, boardHTML, totalScores,
   revealedRounds, roundPoints, standings, progress, roundQuestions, questionImage, isImage, resizeImageFit, readyKey, tryAdvance, avatar, avatarSrc, hexBadge, resizeImage
@@ -24,7 +24,11 @@ const clearTimers = () => { timers.forEach(clearTimeout); timers = []; };
 if (!configOk) showSetup(); else boot();
 
 function boot() {
-  onValue(dbRef(), (snap) => { G = snap.val() || {}; render(); });
+  onValue(dbRef(), (snap) => { G = snap.val() || {}; render(); }, (err) => {
+    console.error(err);
+    stage.innerHTML = `<section class="panel"><h1 class="screen-title">Sem permissão no Firebase</h1>
+      <p>O banco recusou a leitura (${esc(err?.code || err?.message || "erro")}). Publique as regras do README na aba Regras do Realtime Database e recarregue.</p></section>`;
+  });
   onValue(ref(db, ".info/connected"), (snap) => {
     connected = snap.val() === true;
     if (!connected) armed = false;
@@ -203,7 +207,7 @@ function render() {
   if (st.phase === "answering") step = isSubmitted(S.answers?.[r]?.[myId]) ? "sent" : "open";
   if (st.phase === "voting") step = S.votes?.[r]?.[myId] ? "voted" : "open";
   if (st.phase === "voting" || st.phase === "reveal") step += "|" + answerOrder(G, st.round).join(",");
-  const backInLobby = st.phase === "reveal" && S.ready?.[readyKey(st)]?.[myId] && !roundInfo(G).isLast;
+  const backInLobby = false;
   if (backInLobby) step = "inlobby";
   const key = `${st.session}|${st.phase}|${st.round}|${role}|${step}`;
   const prevScreen = document.body.dataset.screen, newScreen = backInLobby ? "lobby" : st.phase;
@@ -453,84 +457,190 @@ function ensureSpace() {
   document.body.prepend(bg);
 }
 
-/* Jogadores flutuando e vagando pelo espaço (dá para empurrar, arrastar e arremessar) */
+/* ============================================================================
+   Lobby compartilhado: todo mundo vê as mesmas posições e as mesmas brincadeiras.
+   Um aparelho (o "anfitrião", escolhido sozinho) calcula o movimento e publica as
+   posições; os outros só desenham suavizando. Empurrões do mouse, arrastos, cliques
+   e arremessos de qualquer pessoa vão para o anfitrião pelo Firebase.
+   Se o caminho "ao vivo" não tiver permissão, cada tela anima sozinha como antes.
+   ============================================================================ */
+const VW = 1000, VH = 560, FW = 120, FH = 118;          // espaço virtual igual para todos
 const floaters = new Map();
 let floatRAF = 0, floatLast = 0;
-const pointer = { x: -1e4, y: -1e4, drag: null, lastX: 0, lastY: 0, lastT: 0, moved: 0 };
+const pointer = { x: -1e4, y: -1e4, drag: null, lastX: 0, lastY: 0, lastT: 0, moved: 0, sentAt: 0 };
+const live = { ok: true, host: false, subs: [], cursors: {}, drags: {}, timeOffset: 0, claimTimer: 0, pubAt: 0, curAt: 0, dragAt: 0 };
+const nowServer = () => Date.now() + live.timeOffset;
+const amSim = () => live.host || !live.ok;               // este aparelho calcula o movimento?
+
+function startLive() {
+  if (live.subs.length || !configOk) return;
+  live.subs.push(onValue(ref(db, ".info/serverTimeOffset"), (s) => { live.timeOffset = s.val() || 0; }));
+  const denied = () => { live.ok = false; };
+  live.subs.push(onValue(liveRef("pos"), (snap) => {
+    const v = snap.val(); if (!v || live.host) return;
+    for (const [id, a] of Object.entries(v.p || {})) {
+      const f = floaters.get(id); if (!f || f === pointer.drag) continue;
+      f.tx = a[0]; f.ty = a[1]; f.tang = a[2] || 0; f.tsc = (a[3] || 100) / 100;
+      if (!f.placed) { f.x = f.tx; f.y = f.ty; f.placed = true; f.el.style.visibility = ""; popIn(f); }
+    }
+  }, denied));
+  live.subs.push(onValue(liveRef("cur"), (snap) => { live.cursors = snap.val() || {}; }, denied));
+  live.subs.push(onValue(liveRef("drag"), (snap) => { live.drags = snap.val() || {}; }, denied));
+  live.subs.push(onChildAdded(liveRef("fx"), (snap) => {
+    if (!live.host) return;
+    const e = snap.val(); remove(snap.ref);
+    const f = e && floaters.get(e.id); if (!f) return;
+    if (e.kind === "boing") { f.rv += 900; f.sc = 1.35; f.vy -= 120; }
+    if (e.kind === "fling") { f.vx = e.vx || 0; f.vy = e.vy || 0; f.rv += (e.vx || 0) * 1.5; }
+  }, denied));
+  const claim = async () => {
+    if (!live.ok) return;
+    try {
+      const res = await runTransaction(liveRef("host"), (cur) => {
+        if (!cur || cur.pid === myId || nowServer() - (cur.at || 0) > 3500) return { pid: myId, at: nowServer() };
+        return;
+      });
+      const was = live.host;
+      live.host = res.committed && res.snapshot.val()?.pid === myId;
+      if (live.host && !was) {
+        onDisconnect(liveRef("host")).remove();
+        for (const f of floaters.values()) { f.placed = true; f.el.style.visibility = ""; }
+      }
+    } catch { live.ok = false; live.host = false; }
+  };
+  claim();
+  live.claimTimer = setInterval(claim, 1000);
+  if (myId) onDisconnect(liveRef(`cur/${myId}`)).remove();
+}
+function stopLive() {
+  live.subs.forEach((u) => { try { u(); } catch {} });
+  live.subs = [];
+  clearInterval(live.claimTimer);
+  if (configOk && myId) {
+    remove(liveRef(`cur/${myId}`)).catch(() => {});
+    if (live.host) remove(liveRef("host")).catch(() => {});
+  }
+  live.host = false;
+}
+
+// Conversão entre o espaço virtual e a tela de cada um
+function fieldBox() { const field = $("#field"); return field ? { field, W: field.clientWidth, H: field.clientHeight } : null; }
+function toLocal(f, box) {
+  return { px: (f.x / (VW - FW)) * Math.max(0, box.W - f.w), py: (f.y / (VH - FH)) * Math.max(0, box.H - f.h) };
+}
+function toVirtual(px, py, f, box) {
+  return { x: (px / Math.max(1, box.W - f.w)) * (VW - FW), y: (py / Math.max(1, box.H - f.h)) * (VH - FH) };
+}
+
 function syncFloaters() {
-  const field = $("#field"); if (!field) return;
+  const box = fieldBox(); if (!box) return;
+  const { field } = box;
   if (!field.dataset.bound) bindField(field);
   const st = getState(G), players = validPlayers(G), rd = sess(G).ready?.[lobbyKey(st)] || {};
   const tId = st.phase === "lobby" ? currentTrue(G) : null;
-  const W = field.clientWidth, H = field.clientHeight;
-  byJoin(players).forEach((id, n) => {
+  byJoin(players).forEach((id) => {
     const p = players[id];
     let f = floaters.get(id);
     if (!f || !field.contains(f.el)) {
       const el = document.createElement("div");
       el.className = "floater"; el.setAttribute("role", "listitem"); el.dataset.id = id;
-      const cols = Math.max(1, Math.floor(W / 140));
       f = { id, el, html: "", w: 120, h: 110,
-        x: reduceMotion() ? (n % cols) * 140 + 10 : 10 + Math.random() * Math.max(10, W - 150),
-        y: reduceMotion() ? Math.floor(n / cols) * 130 + 10 : 10 + Math.random() * Math.max(10, H - 150),
-        vx: (Math.random() < 0.5 ? -1 : 1) * (14 + Math.random() * 20), vy: (Math.random() < 0.5 ? -1 : 1) * (10 + Math.random() * 16),
-        ph: Math.random() * 10, sp: 0.6 + Math.random() * 0.8, ang: 0, rv: 0, sc: 1 };
+        x: 20 + Math.random() * (VW - FW - 40), y: 20 + Math.random() * (VH - FH - 40),
+        vx: (Math.random() < 0.5 ? -1 : 1) * (18 + Math.random() * 22), vy: (Math.random() < 0.5 ? -1 : 1) * (14 + Math.random() * 18),
+        ph: (id.charCodeAt(1) || 3) % 10, sp: 0.6 + ((id.charCodeAt(2) || 5) % 8) / 10, ang: 0, rv: 0, sc: 1, placed: false };
+      f.tx = f.x; f.ty = f.y; f.tang = 0; f.tsc = 1;
       field.appendChild(el);
       floaters.set(id, f);
-      if (!reduceMotion()) { el.classList.add("pop"); puff(field, f); setTimeout(() => el.classList.remove("pop"), 450); }
+      // Quem só desenha espera a posição oficial antes de aparecer
+      if (amSim() || reduceMotion()) { f.placed = true; popIn(f); } else el.style.visibility = "hidden";
     }
-    // Enquanto alguns ainda estão no resultado, mostra quem ainda não voltou
-    const away = st.phase === "reveal" && p.online && !sess(G).ready?.[readyKey(st)]?.[id];
-    const tags = `${id === myId && tId === myId ? `<span class="tag tag-true">você é o verdadeiro</span>` : ""}${!p.online ? `<span class="tag tag-off">offline</span>` : away ? `<span class="tag tag-away">ainda no resultado…</span>` : rd[id] ? `<span class="tag tag-ok">pronto ✓</span>` : ""}`;
+    const tags = `${id === myId && tId === myId ? `<span class="tag tag-true">você é o verdadeiro</span>` : ""}${!p.online ? `<span class="tag tag-off">offline</span>` : rd[id] ? `<span class="tag tag-ok">pronto ✓</span>` : ""}`;
     const html = `<span class="floater-av">${avatar(p, id, "av-md")}</span><span class="floater-name">${esc(p.name)}${id === myId ? " <small>(você)</small>" : ""}</span><span class="floater-tags">${tags}</span>`;
     if (f.html !== html) { f.el.innerHTML = html; f.html = html; f.w = f.el.offsetWidth || 120; f.h = f.el.offsetHeight || 110; }
     f.el.classList.toggle("ready", !!(rd[id] && p.online));
     f.el.classList.toggle("offline", !p.online);
-    f.el.classList.toggle("away", !!away);
     f.el.classList.toggle("is-me", id === myId);
-    place(f, performance.now() / 1000);
+    place(f, nowServer() / 1000, box);
   });
-  for (const [id, f] of floaters) if (!players[id]) { explode(field, f); floaters.delete(id); }
+  for (const [id, f] of floaters) if (!players[id]) { explode(field, f, box); floaters.delete(id); }
 }
-// Mouse/dedo: perto empurra e faz girar; clicar dá um "boing"; arrastar e soltar arremessa
+function popIn(f) {
+  if (reduceMotion()) return;
+  f.el.classList.add("pop"); setTimeout(() => f.el.classList.remove("pop"), 450);
+  const box = fieldBox(); if (box) puff(box.field, f, box);
+}
+
+// Mouse/dedo: empurra, clica (boing), arrasta e arremessa — tudo vai para o anfitrião
 function bindField(field) {
   field.dataset.bound = "1";
   const local = (e) => { const r = field.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+  const sendCursor = (x, y) => {
+    if (!live.ok || !myId || performance.now() - live.curAt < 80) return;
+    live.curAt = performance.now();
+    set(liveRef(`cur/${myId}`), { x: Math.round(x), y: Math.round(y), t: nowServer() }).catch(() => {});
+  };
   field.addEventListener("pointermove", (e) => {
+    const box = fieldBox(); if (!box) return;
     const p = local(e); pointer.x = p.x; pointer.y = p.y;
+    sendCursor((p.x / box.W) * VW, (p.y / box.H) * VH);
     const d = pointer.drag;
     if (d) {
       const now = performance.now(), dt = Math.max(1, now - pointer.lastT) / 1000;
-      d.vx = (p.x - pointer.lastX) / dt; d.vy = (p.y - pointer.lastY) / dt;
-      d.x = p.x - d.offX; d.y = p.y - d.offY;
+      const v = toVirtual(p.x - d.offX, p.y - d.offY, d, box);
+      const vPrev = toVirtual(pointer.lastX - d.offX, pointer.lastY - d.offY, d, box);
+      d.dvx = (v.x - vPrev.x) / dt; d.dvy = (v.y - vPrev.y) / dt;
+      d.x = Math.max(0, Math.min(VW - FW, v.x)); d.y = Math.max(0, Math.min(VH - FH, v.y));
       pointer.moved += Math.abs(p.x - pointer.lastX) + Math.abs(p.y - pointer.lastY);
       pointer.lastX = p.x; pointer.lastY = p.y; pointer.lastT = now;
+      if (live.ok && !live.host && now - live.dragAt > 40) {
+        live.dragAt = now;
+        set(liveRef(`drag/${d.id}`), { by: myId, x: Math.round(d.x), y: Math.round(d.y), t: nowServer() }).catch(() => {});
+      }
     }
   });
-  field.addEventListener("pointerleave", () => { if (!pointer.drag) { pointer.x = pointer.y = -1e4; } });
+  field.addEventListener("pointerleave", () => {
+    if (pointer.drag) return;
+    pointer.x = pointer.y = -1e4;
+    if (live.ok && myId) remove(liveRef(`cur/${myId}`)).catch(() => {});
+  });
   field.addEventListener("pointerdown", (e) => {
     const el = e.target.closest(".floater"); if (!el) return;
     const f = floaters.get(el.dataset.id); if (!f) return;
-    const p = local(e);
-    pointer.drag = Object.assign(f, { offX: p.x - f.x, offY: p.y - f.y });
+    const box = fieldBox(), p = local(e), lp = toLocal(f, box);
+    pointer.drag = Object.assign(f, { offX: p.x - lp.px, offY: p.y - lp.py, dvx: 0, dvy: 0 });
     pointer.lastX = p.x; pointer.lastY = p.y; pointer.lastT = performance.now(); pointer.moved = 0;
     f.el.classList.add("grab"); field.setPointerCapture?.(e.pointerId);
+    if (live.ok && !live.host) onDisconnect(liveRef(`drag/${f.id}`)).remove();
     e.preventDefault();
   });
   const release = () => {
     const f = pointer.drag; if (!f) return;
     pointer.drag = null; f.el.classList.remove("grab");
-    if (pointer.moved < 6) { f.rv += 900; f.sc = 1.35; f.vy -= 120; }            // clique: boing
-    else { const sp = Math.hypot(f.vx, f.vy), max = 900; if (sp > max) { f.vx *= max / sp; f.vy *= max / sp; } f.rv += f.vx * 1.5; }
+    let fx;
+    if (pointer.moved < 6) fx = { id: f.id, kind: "boing" };
+    else {
+      let vx = f.dvx || 0, vy = f.dvy || 0; const sp = Math.hypot(vx, vy), max = 1100;
+      if (sp > max) { vx *= max / sp; vy *= max / sp; }
+      fx = { id: f.id, kind: "fling", vx: Math.round(vx), vy: Math.round(vy) };
+    }
+    if (amSim()) {                                   // o próprio anfitrião aplica na hora
+      if (fx.kind === "boing") { f.rv += 900; f.sc = 1.35; f.vy -= 120; }
+      else { f.vx = fx.vx; f.vy = fx.vy; f.rv += fx.vx * 1.5; }
+    } else {
+      f.tx = f.x; f.ty = f.y;
+      remove(liveRef(`drag/${f.id}`)).catch(() => {});
+      push(liveRef("fx"), fx);
+    }
   };
   field.addEventListener("pointerup", release);
   field.addEventListener("pointercancel", release);
 }
 // Aparece com um "puf" no próprio lugar
-function puff(field, f) {
+function puff(field, f, box) {
+  const lp = toLocal(f, box);
   const p = document.createElement("div");
   p.className = "boom puff";
-  p.style.left = `${f.x + 60}px`; p.style.top = `${f.y + 40}px`;
+  p.style.left = `${lp.px + f.w / 2}px`; p.style.top = `${lp.py + 40}px`;
   for (let i = 0; i < 10; i++) {
     const s = document.createElement("i"), a = (i / 10) * Math.PI * 2, d = 34 + Math.random() * 26;
     s.style.setProperty("--dx", `${Math.cos(a) * d}px`); s.style.setProperty("--dy", `${Math.sin(a) * d}px`);
@@ -541,11 +651,12 @@ function puff(field, f) {
   setTimeout(() => p.remove(), 650);
 }
 // Saiu do lobby: estoura rapidinho
-function explode(field, f) {
+function explode(field, f, box) {
   if (reduceMotion()) { f.el.remove(); return; }
+  const lp = toLocal(f, box);
   const boom = document.createElement("div");
   boom.className = "boom";
-  boom.style.left = `${f.x + f.w / 2}px`; boom.style.top = `${f.y + 40}px`;
+  boom.style.left = `${lp.px + f.w / 2}px`; boom.style.top = `${lp.py + 40}px`;
   const colors = ["#ffd84d", "#ff5d8f", "#22e5ea", "#fff", "#b58cff"];
   for (let i = 0; i < 18; i++) {
     const s = document.createElement("i"), a = (i / 18) * Math.PI * 2 + Math.random() * .3, d = 50 + Math.random() * 70;
@@ -558,40 +669,79 @@ function explode(field, f) {
   setTimeout(() => f.el.remove(), 260);
   setTimeout(() => boom.remove(), 700);
 }
-function place(f, t) {
+function place(f, t, box) {
+  const lp = toLocal(f, box);
   const bob = Math.sin(t * f.sp + f.ph) * 7, rot = Math.sin(t * f.sp * 0.7 + f.ph) * 7 + f.ang;
-  f.el.style.transform = `translate3d(${f.x.toFixed(1)}px, ${(f.y + bob).toFixed(1)}px, 0) rotate(${rot.toFixed(1)}deg) scale(${f.sc.toFixed(3)})`;
+  f.el.style.transform = `translate3d(${lp.px.toFixed(1)}px, ${(lp.py + bob).toFixed(1)}px, 0) rotate(${rot.toFixed(1)}deg) scale(${f.sc.toFixed(3)})`;
 }
-function floatStep(ts) {
-  const field = $("#field");
-  if (!field) { floatRAF = 0; return; }
-  const dt = Math.min(0.05, (ts - (floatLast || ts)) / 1000); floatLast = ts;
-  const W = field.clientWidth, H = field.clientHeight, t = ts / 1000;
+// Movimento calculado pelo anfitrião (no espaço virtual)
+function simulate(dt) {
   const list = [...floaters.values()];
-  // Um empurra o outro de leve para ninguém ficar grudado
   for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
     const a = list[i], b = list[j], dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
-    if (d < 140) { const f = ((140 - d) / 140) * 120 * dt, ux = dx / d, uy = dy / d; a.vx -= ux * f; a.vy -= uy * f; b.vx += ux * f; b.vy += uy * f; }
+    if (d < 150) { const k = ((150 - d) / 150) * 130 * dt, ux = dx / d, uy = dy / d; a.vx -= ux * k; a.vy -= uy * k; b.vx += ux * k; b.vy += uy * k; }
   }
+  // cursores de todo mundo (o meu local e os que chegam do Firebase)
+  const box = fieldBox();
+  const cursors = [];
+  if (box && pointer.x > -1e3) cursors.push({ x: (pointer.x / box.W) * VW, y: (pointer.y / box.H) * VH });
+  const now = nowServer();
+  for (const [pid, c] of Object.entries(live.cursors || {})) if (pid !== myId && c && now - (c.t || 0) < 1500) cursors.push(c);
   for (const f of list) {
-    if (f === pointer.drag) { f.ang *= 1 - 3 * dt; f.sc += (1.12 - f.sc) * 10 * dt; place(f, t); continue; }
-    // Foge do mouse e dá uma girada
-    const cx = f.x + f.w / 2, cy = f.y + 40, mx = cx - pointer.x, my = cy - pointer.y, md = Math.hypot(mx, my);
-    if (md < 130) { const k = ((130 - md) / 130) * 900 * dt; f.vx += (mx / (md || 1)) * k; f.vy += (my / (md || 1)) * k; f.rv += (mx > 0 ? 1 : -1) * 600 * dt; }
+    const rd0 = live.drags?.[f.id];
+    const remoteDrag = rd0 && now - (rd0.t || 0) < 1500 ? rd0 : null;   // arrasto abandonado não prende ninguém
+    if (f === pointer.drag || (remoteDrag && remoteDrag.by !== myId)) {
+      if (remoteDrag && f !== pointer.drag) {
+        const nx = remoteDrag.x, ny = remoteDrag.y;
+        f.vx = (nx - f.x) / Math.max(dt, 0.016) * 0.5; f.vy = (ny - f.y) / Math.max(dt, 0.016) * 0.5;
+        f.x += (nx - f.x) * Math.min(1, dt * 18); f.y += (ny - f.y) * Math.min(1, dt * 18);
+      }
+      f.ang *= 1 - 3 * dt; f.sc += (1.12 - f.sc) * 10 * dt;
+      continue;
+    }
+    const cx = f.x + FW / 2, cy = f.y + FH / 2;
+    for (const c of cursors) {
+      const mx = cx - c.x, my = cy - c.y, md = Math.hypot(mx, my);
+      if (md < 140) { const k = ((140 - md) / 140) * 950 * dt; f.vx += (mx / (md || 1)) * k; f.vy += (my / (md || 1)) * k; f.rv += (mx > 0 ? 1 : -1) * 600 * dt; }
+    }
     f.vx += (Math.random() - 0.5) * 30 * dt; f.vy += (Math.random() - 0.5) * 30 * dt;
     const sp = Math.hypot(f.vx, f.vy);
-    if (sp > 42) { const k = Math.max(42 / sp, 1 - 2.2 * dt); f.vx *= k; f.vy *= k; }      // depois de arremessado, desacelera aos poucos
-    else if (sp < 12) { f.vx *= 12 / (sp || 1); f.vy *= 12 / (sp || 1); }
+    if (sp > 46) { const k = Math.max(46 / sp, 1 - 2.2 * dt); f.vx *= k; f.vy *= k; }
+    else if (sp < 14) { f.vx *= 14 / (sp || 1); f.vy *= 14 / (sp || 1); }
     f.x += f.vx * dt; f.y += f.vy * dt;
-    if (f.x < 0) { f.x = 0; f.vx = Math.abs(f.vx) * 0.8; } if (f.x > W - f.w) { f.x = Math.max(0, W - f.w); f.vx = -Math.abs(f.vx) * 0.8; }
-    if (f.y < 0) { f.y = 0; f.vy = Math.abs(f.vy) * 0.8; } if (f.y > H - f.h) { f.y = Math.max(0, H - f.h); f.vy = -Math.abs(f.vy) * 0.8; }
+    if (f.x < 0) { f.x = 0; f.vx = Math.abs(f.vx) * 0.8; } if (f.x > VW - FW) { f.x = VW - FW; f.vx = -Math.abs(f.vx) * 0.8; }
+    if (f.y < 0) { f.y = 0; f.vy = Math.abs(f.vy) * 0.8; } if (f.y > VH - FH) { f.y = VH - FH; f.vy = -Math.abs(f.vy) * 0.8; }
     f.ang += f.rv * dt; f.rv *= 1 - 2.5 * dt; if (Math.abs(f.rv) < 20) f.ang *= 1 - 3 * dt;
     f.sc += (1 - f.sc) * 8 * dt;
-    place(f, t);
   }
+}
+function publish() {
+  if (!live.host || !live.ok || performance.now() - live.pubAt < 85) return;
+  live.pubAt = performance.now();
+  const p = {};
+  for (const f of floaters.values()) p[f.id] = [Math.round(f.x), Math.round(f.y), Math.round(f.ang), Math.round(f.sc * 100)];
+  set(liveRef("pos"), { t: nowServer(), p }).catch(() => { live.ok = false; });
+}
+function floatStep(ts) {
+  const box = fieldBox();
+  if (!box) { floatRAF = 0; return; }
+  const dt = Math.min(0.05, (ts - (floatLast || ts)) / 1000); floatLast = ts;
+  const t = nowServer() / 1000;        // mesmo relógio para todos → o balanço fica igual em todas as telas
+  if (amSim()) { simulate(dt); publish(); }
+  else {
+    // Só desenha: vai suavemente até a posição oficial (o que eu arrasto segue meu dedo)
+    for (const f of floaters.values()) {
+      if (f === pointer.drag) { f.sc += (1.12 - f.sc) * 10 * dt; continue; }
+      const k = Math.min(1, dt * 9);
+      f.x += (f.tx - f.x) * k; f.y += (f.ty - f.y) * k;
+      f.ang += (f.tang - f.ang) * k; f.sc += (f.tsc - f.sc) * k;
+    }
+  }
+  for (const f of floaters.values()) place(f, t, box);
   floatRAF = requestAnimationFrame(floatStep);
 }
 function startFloat() {
+  startLive();
   syncFloaters();
   if (reduceMotion() || floatRAF) return;
   floatLast = 0;
@@ -601,6 +751,8 @@ function stopFloat() {
   if (floatRAF) cancelAnimationFrame(floatRAF);
   floatRAF = 0;
   floaters.clear();
+  pointer.drag = null;
+  stopLive();
 }
 
 /* ---------- Respondendo o formulário ---------- */
@@ -1106,12 +1258,12 @@ function animateBoard(animate) {
 function refreshReveal() {
   const st = getState(G), rd = sess(G).ready?.[readyKey(st)] || {}, pr = progress(G), last = roundInfo(G).isLast;
   if (!$("#board").dataset.anim) $("#board").innerHTML = boardHTML(ranking(G), myId);
-  const base = last ? "Ver resultado final" : "Voltar ao lobby";
+  const base = last ? "Ver resultado final" : "Próxima rodada";
   $("#nextBtn").textContent = rd[myId] ? "Pronto, esperando os outros" : kickLeft != null ? `${base} (${kickLeft}s)` : base;
   $("#nextBtn").disabled = !!rd[myId];
   $("#status").textContent = last
     ? `${pr.done.length} de ${pr.need.length} prontos para o resultado final.`
-    : `${pr.done.length} de ${pr.need.length} já voltaram ao lobby. Quem não voltar é levado automaticamente.`;
+    : `${pr.done.length} de ${pr.need.length} prontos para a próxima rodada. Quem não clicar segue automaticamente.`;
 }
 
 /* ---------- Final ---------- */

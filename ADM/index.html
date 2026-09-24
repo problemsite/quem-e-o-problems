@@ -10,6 +10,27 @@
   <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="../css/style.css">
   <script type="module" src="../js/adm.js"></script>
+  <script>
+    // Aviso se a página ficar parada em "Carregando…"
+    (function () {
+      var msg = function (html) {
+        var el = document.getElementById("stage") || document.getElementById("admMain");
+        if (el) el.innerHTML = '<section class="panel" style="max-width:640px;margin:40px auto">' + html + '</section>';
+      };
+      if (location.protocol === "file:") {
+        document.addEventListener("DOMContentLoaded", function () {
+          msg('<h1 class="screen-title">Abra pelo servidor, não direto do arquivo</h1><p>Quando o <code>index.html</code> é aberto com dois cliques, o navegador bloqueia os scripts do jogo. Abra pelo link do GitHub Pages ou pelo Live Server do VS Code (endereço começando com <code>http://</code>).</p>');
+        });
+        return;
+      }
+      setTimeout(function () {
+        var el = document.getElementById("stage");
+        if (el && el.querySelector(".loading")) {
+          msg('<h1 class="screen-title">Não consegui conectar ao Firebase</h1><p>Confira se o Realtime Database foi criado, se as regras (no README) foram publicadas e se a internet está funcionando. Depois recarregue a página.</p>');
+        }
+      }, 12000);
+    })();
+  </script>
 </head>
 <body data-screen="adm">
   <header class="topbar">

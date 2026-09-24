@@ -1,6 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
-  getDatabase, ref, onValue, set, update, remove, push,
+  getDatabase, ref, onValue, onChildAdded, set, update, remove, push,
   runTransaction, onDisconnect, serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 import { firebaseConfig, ROOT_PATH } from "./firebase-config.js";
@@ -13,7 +13,9 @@ export const configOk = Boolean(
 export const db = configOk ? getDatabase(initializeApp(firebaseConfig)) : null;
 const ROOT = ROOT_PATH || "quem-e-o-problems";
 export const dbRef = (p = "") => ref(db, p ? `${ROOT}/${p}` : ROOT);
-export { ref, onValue, set, update, remove, push, runTransaction, onDisconnect, serverTimestamp };
+// Dados rápidos do lobby (posições, arrastos) ficam num caminho separado para não pesar o resto
+export const liveRef = (p = "") => ref(db, p ? `${ROOT}_live/${p}` : `${ROOT}_live`);
+export { ref, onValue, onChildAdded, set, update, remove, push, runTransaction, onDisconnect, serverTimestamp };
 
 /* ---------- Utilidades ---------- */
 export const PHASE_LABEL = {
@@ -313,8 +315,8 @@ export function planNext(g) {
     case "lobby": return startRound(st.round, st.rounds);
     case "answering": return { state: { ...base, phase: "voting" } };
     case "voting": return { state: { ...base, phase: "reveal", revealAt: Date.now() } };
-    // Fim da rodada: volta todo mundo ao lobby mantendo os pontos
-    case "reveal": return nextForm(g) ? { state: { ...base, phase: "lobby", round: st.round + 1 } } : { state: { ...base, phase: "final" } };
+    // Fim da rodada: segue direto para a próxima; o lobby só volta depois dos resultados finais
+    case "reveal": return nextForm(g) ? startRound(st.round + 1, st.rounds) : { state: { ...base, phase: "final" } };
     case "final": return resetPlan(g);
   }
   return null;

@@ -23,7 +23,10 @@ if (!configOk) {
     <p>Abra <code>js/firebase-config.js</code>, cole a configuração do seu projeto e publique de novo.</p></section>`;
 } else {
   bind();
-  onValue(dbRef(), (snap) => { G = snap.val() || {}; render(); });
+  onValue(dbRef(), (snap) => { G = snap.val() || {}; render(); }, (err) => {
+    console.error(err);
+    $("#admMain").innerHTML = `<section class="panel"><h2>Sem permissão no Firebase</h2><p>O banco recusou a leitura (${esc(err?.code || err?.message || "erro")}). Publique as regras do README e recarregue.</p></section>`;
+  });
 }
 
 setInterval(() => { if (G && getState(G).phase === "reveal") checkAdvance(); }, 3000);
@@ -68,7 +71,7 @@ function renderGame() {
     ${waiting.length ? `<p class="status">Esperando: ${esc(waiting.join(", "))}</p>` : ""}`;
   $("#forceBtn").textContent =
     st.phase === "lobby" ? "Começar a rodada sem esperar" :
-    st.phase === "reveal" ? (info.isLast ? "Ir para o resultado final" : "Mandar todos ao lobby") :
+    st.phase === "reveal" ? (info.isLast ? "Ir para o resultado final" : "Ir para a próxima rodada") :
     st.phase === "final" ? "Voltar ao lobby" : "Pular para a próxima fase";
 }
 
